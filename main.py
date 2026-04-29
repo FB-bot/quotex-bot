@@ -2,11 +2,11 @@ import os
 import requests
 import asyncio
 import sqlite3
-import statistics
 import threading
 import time
 
 from datetime import datetime, timedelta
+
 from telegram import Bot
 
 # ======================================
@@ -44,16 +44,18 @@ conn = sqlite3.connect(
 
 cursor = conn.cursor()
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pair TEXT,
-    signal TEXT,
-    confidence INTEGER,
-    result TEXT,
-    time TEXT
+cursor.execute(
+    '''
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair TEXT,
+        signal TEXT,
+        confidence INTEGER,
+        result TEXT,
+        time TEXT
+    )
+    '''
 )
-''')
 
 conn.commit()
 
@@ -63,39 +65,50 @@ conn.commit()
 
 def get_market_data(symbol):
 
-    url = (
-        f"https://api.binance.com/api/v3/klines"
-        f"?symbol={symbol}"
-        f"&interval={TIMEFRAME}"
-        f"&limit={LIMIT}"
-    )
+    try:
 
-    response = requests.get(
-        url,
-        timeout=10
-    )
+        url = (
+            f"https://api.binance.com/api/v3/klines"
+            f"?symbol={symbol}"
+            f"&interval={TIMEFRAME}"
+            f"&limit={LIMIT}"
+        )
 
-    data = response.json()
+        response = requests.get(
+            url,
+            timeout=10
+        )
 
-    closes = []
-    highs = []
-    lows = []
-    opens = []
+        data = response.json()
 
-    for candle in data:
+        closes = []
+        highs = []
+        lows = []
+        opens = []
 
-        opens.append(float(candle[1]))
-        highs.append(float(candle[2]))
-        lows.append(float(candle[3]))
-        closes.append(float(candle[4]))
+        for candle in data:
 
-    return opens, highs, lows, closes
+            opens.append(float(candle[1]))
+            highs.append(float(candle[2]))
+            lows.append(float(candle[3]))
+            closes.append(float(candle[4]))
+
+        return opens, highs, lows, closes
+
+    except Exception as e:
+
+        print("Market Data Error:", e)
+
+        return [], [], [], []
 
 # ======================================
 # EMA
 # ======================================
 
 def ema(prices, period):
+
+    if len(prices) < period:
+        return 0
 
     multiplier = 2 / (period + 1)
 
@@ -117,6 +130,9 @@ def ema(prices, period):
 # ======================================
 
 def rsi(prices, period=14):
+
+    if len(prices) < period + 1:
+        return 50
 
     gains = []
     losses = []
@@ -152,38 +168,20 @@ def rsi(prices, period=14):
 
 def macd(prices):
 
-    ema12 = ema(prices, 12)
-    ema26 = ema(prices, 26)
-
-    return ema12 - ema26
-
-# ======================================
-# BOLLINGER BANDS
-# ======================================
-
-def bollinger_bands(prices, period=20):
-
-    sma = (
-        sum(prices[-period:]) / period
+    return (
+        ema(prices, 12)
+        -
+        ema(prices, 26)
     )
-
-    variance = sum(
-        (p - sma) ** 2
-        for p in prices[-period:]
-    ) / period
-
-    std_dev = variance ** 0.5
-
-    upper_band = sma + (2 * std_dev)
-    lower_band = sma - (2 * std_dev)
-
-    return upper_band, lower_band
 
 # ======================================
 # STOCHASTIC
 # ======================================
 
 def stochastic(prices):
+
+    if len(prices) < 14:
+        return 50
 
     highest = max(prices[-14:])
     lowest = min(prices[-14:])
@@ -205,18 +203,10 @@ def stochastic(prices):
 
 def momentum(prices):
 
+    if len(prices) < 10:
+        return 0
+
     return prices[-1] - prices[-10]
-
-# ======================================
-# SUPPORT & RESISTANCE
-# ======================================
-
-def support_resistance(highs, lows):
-
-    resistance = max(highs[-20:])
-    support = min(lows[-20:])
-
-    return support, resistance
 
 # ======================================
 # CANDLE PATTERN
@@ -228,6 +218,9 @@ def candle_pattern(
     highs,
     lows
 ):
+
+    if len(opens) < 1:
+        return "NONE"
 
     last_open = opens[-1]
     last_close = closes[-1]
@@ -256,20 +249,6 @@ def candle_pattern(
     return "NONE"
 
 # ======================================
-# MARTINGALE
-# ======================================
-
-martingale_step = 0
-
-def martingale_amount(base_amount=1):
-
-    global martingale_step
-
-    return base_amount * (
-        2 ** martingale_step
-    )
-
-# ======================================
 # SAVE SIGNAL
 # ======================================
 
@@ -279,28 +258,34 @@ def save_signal(
     confidence
 ):
 
-    cursor.execute(
-        """
-        INSERT INTO signals
-        (
-            pair,
-            signal,
-            confidence,
-            result,
-            time
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            pair,
-            signal,
-            confidence,
-            "PENDING",
-            str(datetime.now())
-        )
-    )
+    try:
 
-    conn.commit()
+        cursor.execute(
+            """
+            INSERT INTO signals
+            (
+                pair,
+                signal,
+                confidence,
+                result,
+                time
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                pair,
+                signal,
+                confidence,
+                "PENDING",
+                str(datetime.now())
+            )
+        )
+
+        conn.commit()
+
+    except Exception as e:
+
+        print("Database Error:", e)
 
 # ======================================
 # WIN RATE
@@ -308,34 +293,40 @@ def save_signal(
 
 def get_win_rate():
 
-    cursor.execute(
-        """
-        SELECT COUNT(*)
-        FROM signals
-        WHERE result='WIN'
-        """
-    )
+    try:
 
-    wins = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM signals
+            WHERE result='WIN'
+            """
+        )
 
-    cursor.execute(
-        """
-        SELECT COUNT(*)
-        FROM signals
-        WHERE result
-        IN ('WIN', 'LOSS')
-        """
-    )
+        wins = cursor.fetchone()[0]
 
-    total = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM signals
+            WHERE result
+            IN ('WIN', 'LOSS')
+            """
+        )
 
-    if total == 0:
+        total = cursor.fetchone()[0]
+
+        if total == 0:
+            return 0
+
+        return round(
+            (wins / total) * 100,
+            2
+        )
+
+    except:
+
         return 0
-
-    return round(
-        (wins / total) * 100,
-        2
-    )
 
 # ======================================
 # DASHBOARD
@@ -343,23 +334,28 @@ def get_win_rate():
 
 def dashboard():
 
-    cursor.execute(
-        "SELECT COUNT(*) FROM signals"
-    )
+    try:
 
-    total = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM signals"
+        )
 
-    win_rate = get_win_rate()
+        total = cursor.fetchone()[0]
 
-    return f"""
+        win_rate = get_win_rate()
+
+        return f"""
 
 📊 DASHBOARD
 
 Total Signals: {total}
 Win Rate: {win_rate}%
-Martingale Step: {martingale_step}
 
 """
+
+    except:
+
+        return "Dashboard Error"
 
 # ======================================
 # ANALYZE MARKET
@@ -369,6 +365,9 @@ def analyze_pair(pair):
 
     opens, highs, lows, closes = get_market_data(pair)
 
+    if len(closes) == 0:
+        return None
+
     rsi_value = rsi(closes)
 
     ema_fast = ema(closes, 9)
@@ -376,16 +375,9 @@ def analyze_pair(pair):
 
     macd_value = macd(closes)
 
-    upper_band, lower_band = bollinger_bands(closes)
-
     stochastic_value = stochastic(closes)
 
     momentum_value = momentum(closes)
-
-    support, resistance = support_resistance(
-        highs,
-        lows
-    )
 
     pattern = candle_pattern(
         opens,
@@ -489,16 +481,6 @@ def analyze_pair(pair):
 
         "pattern": pattern,
 
-        "support": round(
-            support,
-            2
-        ),
-
-        "resistance": round(
-            resistance,
-            2
-        ),
-
         "price": current_price
 
     }
@@ -509,27 +491,26 @@ def analyze_pair(pair):
 
 def update_result(pair, result):
 
-    global martingale_step
+    try:
 
-    cursor.execute(
-        """
-        UPDATE signals
-        SET result=?
-        WHERE pair=?
-        AND result='PENDING'
-        """,
-        (result, pair)
-    )
+        cursor.execute(
+            """
+            UPDATE signals
+            SET result=?
+            WHERE pair=?
+            AND result='PENDING'
+            """,
+            (result, pair)
+        )
 
-    conn.commit()
+        conn.commit()
 
-    if result == "WIN":
-        martingale_step = 0
-    else:
-        martingale_step += 1
+    except Exception as e:
+
+        print("Update Error:", e)
 
 # ======================================
-# SIGNAL RESULT CHECKER
+# CHECK SIGNAL RESULT
 # ======================================
 
 def check_signal_result(
@@ -584,35 +565,27 @@ def check_signal_result(
 
 🎯 Result: {result}
 
-📍 Entry Price: {entry_price}
-📍 Close Price: {close_price}
+📍 Entry: {entry_price}
+📍 Close: {close_price}
 
 """
 
-        loop = asyncio.new_event_loop()
-
-        asyncio.set_event_loop(loop)
-
-        loop.run_until_complete(
+        asyncio.run(
             bot.send_message(
                 chat_id=CHAT_ID,
                 text=result_message
             )
         )
 
-        loop.close()
-
     except Exception as e:
 
         print("Result Error:", e)
 
 # ======================================
-# SEND TELEGRAM SIGNAL
+# SEND SIGNAL
 # ======================================
 
 async def send_signal(data):
-
-    amount = martingale_amount()
 
     entry_time = (
         datetime.now()
@@ -621,10 +594,6 @@ async def send_signal(data):
 
     formatted_time = entry_time.strftime(
         "%I:%M %p"
-    )
-
-    candle_time = entry_time.strftime(
-        "%H:%M"
     )
 
     message = f"""
@@ -643,14 +612,8 @@ async def send_signal(data):
 
 🕯 Pattern: {data['pattern']}
 
-🟢 Support: {data['support']}
-🔴 Resistance: {data['resistance']}
-
-💰 Martingale Amount: ${amount}
-
 ⏰ Timeframe: 1 Minute
 🕒 Entry Time: {formatted_time}
-🕯 Entry Candle: {candle_time} Candle
 
 """
 
@@ -717,6 +680,9 @@ async def main():
 
                 result = analyze_pair(pair)
 
+                if result is None:
+                    continue
+
                 signal = result['signal']
 
                 if signal:
@@ -749,7 +715,7 @@ async def main():
 
         except Exception as e:
 
-            print("Error:", e)
+            print("Main Loop Error:", e)
 
         await asyncio.sleep(60)
 
